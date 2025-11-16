@@ -687,4 +687,83 @@ class Conv(TensorOp):
 def conv(a, b, stride=1, padding=1):
     return Conv(stride, padding)(a, b)
 
+class Topk(TensorOp):
+    def __init__(self, k: int, axis: int = -1):
+        self.k = k
+        self.axis = axis
 
+    def compute(self, a):
+        """
+        Compute the topk values and indices of a tensor.
+        Returns: tuple of (values, indices)
+        values: top k values along axis
+        indices: indices of top k values along axis
+        """
+        k = self.k
+        axis = self.axis
+        
+        # Handle negative axis
+        if axis < 0:
+            axis = len(a.shape) + axis
+
+        # Use argpartition to get k largest indices efficiently (not sorted)
+        # indices = a.argpartition(-k, axis=axis)
+        indices = array_api.argpartition(a, -k, axis=axis)
+
+        # Get only the last k indices (=k largest indices)
+        indices = array_api.take(indices, array_api.arange(-k, 0), axis=axis)
+
+        # Sort these k indices by their values
+        # Gather values at these indices first
+        values = array_api.take_along_axis(a, indices, axis=axis)
+
+        # Get sorting permutation within these k elements -> efficient since we're sorting only k elements
+        sorted_positions = array_api.argsort(-values, axis=axis)  # negative for descending order
+        
+        # Apply sorting to both values and indices
+        sorted_values = array_api.take_along_axis(values, sorted_positions, axis=axis)
+        sorted_indices = array_api.take_along_axis(indices, sorted_positions, axis=axis)
+
+        return sorted_values, sorted_indices
+
+    def gradient(self, out_grad, node):
+        """
+        Gradient: scatter out_grad back to positions indicated by indices.
+        Only top-k positions receive gradients, rest are zero.
+        
+        out_grad: gradient w.r.t output values
+        lhs: original input tensor
+        node.realize_cached_data(): (values, indices) tuple from forward pass
+        """
+        # Get the original input tensor
+        lhs, = node.inputs
+        # Get the topk indices from forward pass
+        _, indices = node.realize_cached_data()
+
+        # Create zero gradient of input shape
+        input_shape = lhs.shape
+        grad_input = array_api.zeros(input_shape, device=node.device)
+
+        # Scatter out_grad to positions indicated by indices
+        grad_input = array_api.scatter_along_axis(
+            grad_input, 
+            indices, 
+            out_grad, 
+            axis=self.axis
+        )
+        
+        return grad_input
+
+def topk(a, k, axis=-1):
+    """
+    Compute the topk values and indices of a tensor.    
+    
+    Args:
+        a: Input tensor
+        k: Number of top elements
+        axis: Axis along which to compute topk
+        
+    Returns:
+        Tuple of (values, indices) tensors
+    """
+    return Topk(k, axis)(a)
