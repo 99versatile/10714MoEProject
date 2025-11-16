@@ -693,6 +693,111 @@ class NDArray:
         return padded
         ### END YOUR SOLUTION
 
+    
+    ### - Utility functions for topk operation -- ###
+    ### Currently wrappers for Numpy's operations ###
+
+    def argpartition(self, kth: int, axis: int = -1) -> "NDArray":
+        """
+        Perform argpartition - returns indices that partition the array along the specified axis
+        
+        Args:
+            self: Array to partition
+            kth: Element index to partition around (negative means from end)
+            axis: Axis along which to partition
+            
+        Returns:
+            Indices that partition the array
+        """
+        # Convert to numpy, perform argpartition, convert back
+        # This is necessary because backend may not implement argpartition natively
+        numpy_array = self.numpy()
+        
+        # NumPy's argpartition returns indices that partition the array
+        indices = np.argpartition(numpy_array, kth, axis=axis)
+        
+        # Convert indices back to NDArray on the same device
+        return NDArray(indices, device=self.device)
+
+
+    def argsort(self, axis: int = -1) -> "NDArray":
+        """
+        Returns indices that would sort the array.
+        
+        Args:
+            arr: input array
+            axis: axis along which to sort
+            
+        Returns:
+            array of indices that sort arr
+        """
+        # Convert to numpy, perform argsort, convert back
+        numpy_array = self.numpy()
+        
+        # NumPy's argsort returns indices that would sort the array
+        indices = np.argsort(numpy_array, axis=axis)
+        
+        # Convert indices back to NDArray on the same device
+        return NDArray(indices, device=self.device)
+
+
+    def take_along_axis(self, indices: "NDArray", axis: int) -> "NDArray":
+        """
+        Take values from array by matching 1d index and data slices.
+        
+        Args:
+            arr: input array
+            indices: indices to take
+            axis: axis along which to take
+            
+        Returns:
+            gathered array
+        """
+        # Handle negative axis
+        if axis < 0:
+            axis = self.ndim + axis
+        
+        # Convert both array and indices to numpy for the operation
+        numpy_array = self.numpy()
+        numpy_indices = indices.numpy().astype(np.intp)  # Ensure integer type
+        
+        # NumPy's take_along_axis performs the gather operation
+        result = np.take_along_axis(numpy_array, numpy_indices, axis=axis)
+        
+        # Convert result back to NDArray on the same device
+        return NDArray(result, device=self.device)
+
+
+    def scatter_along_axis(self, indices: "NDArray", values: "NDArray", axis: int) -> "NDArray":
+        """
+        Scatter values into array at positions indicated by indices.
+        This is the inverse of take_along_axis.
+        
+        Args:
+            arr: destination array (will be modified)
+            indices: indices where to place values
+            values: values to place
+            axis: axis along which to scatter
+            
+        Returns:
+            array with scattered values
+        """
+        # Handle negative axis
+        if axis < 0:
+            axis = self.ndim + axis
+        
+        # Convert to numpy for the operation
+        numpy_array = self.numpy().copy()  # Copy to avoid modifying original
+        numpy_indices = indices.numpy().astype(np.intp)
+        numpy_values = values.numpy()
+        
+        # NumPy's put_along_axis scatters values to indexed positions
+        np.put_along_axis(numpy_array, numpy_indices, numpy_values, axis=axis)
+        
+        # Convert result back to NDArray on the same device
+        return NDArray(numpy_array, device=self.device)
+
+
 def array(a: Any, dtype: str = "float32", device: BackendDevice | None = None) -> NDArray:
     """Convenience methods to match numpy a bit more closely."""
     dtype = "float32" if dtype is None else dtype
@@ -740,3 +845,78 @@ def sum(a: NDArray, axis: int | tuple[int] | list[int] | None = None, keepdims: 
 
 def flip(a: NDArray, axes: tuple[int, ...]) -> NDArray:
     return a.flip(axes)
+
+def argpartition(a: NDArray, kth: int, axis: int = -1) -> NDArray:
+    """Module-level wrapper for argpartition method."""
+    return a.argpartition(kth, axis)
+
+
+def argsort(a: NDArray, axis: int = -1) -> NDArray:
+    """Module-level wrapper for argsort method."""
+    return a.argsort(axis)
+
+def take_along_axis(a: NDArray, indices: NDArray, axis: int) -> NDArray:
+    """Module-level wrapper for take_along_axis method."""
+    return a.take_along_axis(indices, axis)
+
+
+def scatter_along_axis(a: NDArray, indices: NDArray, values: NDArray, axis: int) -> NDArray:
+    """Module-level wrapper for scatter_along_axis method."""
+    return a.scatter_along_axis(indices, values, axis)
+
+def arange(start: int, stop: int | None = None, step: int = 1, 
+           dtype: str = "float32", device: BackendDevice | None = None) -> NDArray:
+    """Module-level wrapper for arange method."""
+    device = device if device is not None else default_device()
+    
+    # Handle the case where only one argument is provided (it becomes stop)
+    if stop is None:
+        stop = start
+        start = 0
+    
+    # Create numpy array with arange
+    numpy_array = np.arange(start, stop, step, dtype=dtype)
+    
+    # Convert to NDArray on specified device
+    return NDArray(numpy_array, device=device)
+
+def take(a: NDArray, indices: NDArray | list | tuple, axis: int | None = None) -> NDArray:
+    """
+    Take elements from array at specified indices.
+
+    Args:
+        a: input array
+        indices: indices to take
+        axis: axis along which to take
+        
+    Returns:
+        gathered array
+    """
+    numpy_array = a.numpy()
+    
+    # Convert indices to numpy if it's an NDArray
+    if isinstance(indices, NDArray):
+        numpy_indices = indices.numpy().astype(np.intp)
+    else:
+        numpy_indices = np.array(indices, dtype=np.intp)
+    
+    # Use numpy's take function
+    result = np.take(numpy_array, numpy_indices, axis=axis)
+    
+    return NDArray(result, device=a.device)
+
+def argmax(a: NDArray, axis: int | None = None, keepdims: bool = False) -> NDArray:
+    """
+    Find the indices of the maximum values along an axis.
+    
+    Args:
+        a: input array
+        axis: axis along which to find the maximum
+        keepdims: whether to keep the dimensions of the input array
+        
+    Returns:
+        array of indices of the maximum values
+    """
+    numpy_array = a.numpy()
+    indices = np.argmax(numpy_array, axis=axis, keepdims=keepdims)
+    return NDArray(indices, device=a.device)
