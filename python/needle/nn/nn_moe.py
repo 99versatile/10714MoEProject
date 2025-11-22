@@ -177,6 +177,8 @@ class TopKMoETransformerLayer(Module):
         num_head: int,
         dim_head: int,
         hidden_size: int,
+        num_experts: int,
+        topk: int,
         *,
         dropout = 0.,
         causal = True,
@@ -197,11 +199,8 @@ class TopKMoETransformerLayer(Module):
         self.attn = AttentionLayer(q_features, num_head, dim_head, device=device, dtype=dtype, dropout=dropout, causal=causal)
         self.dropout1 = Dropout(dropout)
         self.norm = LayerNorm1d(q_features, device=device, dtype=dtype)
-        self.linear1 = Linear(q_features, hidden_size, device=device, dtype=dtype)
-        self.relu = ReLU()
+        self.topk_moe = TopKMoE(num_experts, q_features, topk, hidden_size, device=device, dtype=dtype)
         self.dropout2 = Dropout(dropout)
-        self.linear2 = Linear(hidden_size, q_features, device=device, dtype=dtype)
-        self.dropout3 = Dropout(dropout)
         ### END YOUR SOLUTION
 
     def forward(
@@ -225,15 +224,73 @@ class TopKMoETransformerLayer(Module):
         # Reshape for LayerNorm1d: (B, T, D) -> (B*T, D)
         f = x.reshape((batch_size * seq_len, x_dim))
         f = self.norm(f)
-        # Keep f in 2D for Linear layers
-        f = self.linear1(f)
-        f = self.relu(f)
+        # Keep f in 2D for TopKMoE
+        f = self.topk_moe(f)
         f = self.dropout2(f)
-        f = self.linear2(f)
-        f = self.dropout3(f)
         # Reshape back to 3D before residual connection
         f = f.reshape((batch_size, seq_len, x_dim))
         y = x + f
         ### END YOUR SOLUTION
 
         return y
+
+
+class TopKMoETransformer(Module):
+
+    def __init__(
+        self,
+        embedding_size: int,
+        hidden_size: int,
+        num_layers: int, 
+        num_experts: int,
+        topk: int,
+        *,
+        num_head: int = 8,
+        dim_head: int = 32,
+        dropout = 0.,
+        causal = True,
+        device = None,
+        dtype = "float32",
+        batch_first = False,
+        sequence_len = 2048
+    ):
+
+        super().__init__()
+
+        self.device = device
+        self.dtype = dtype
+        self.batch_first = batch_first
+
+        ### BEGIN YOUR SOLUTION
+        self.positional_encoding = Embedding(sequence_len, embedding_size, device=device, dtype=dtype)
+        self.layers = Sequential(*[TopKMoETransformerLayer(embedding_size, num_head, dim_head, hidden_size, num_experts, topk, dropout=dropout, causal=causal, device=device, dtype=dtype) for _ in range(num_layers)])
+        ### END YOUR SOLUTION
+
+    def forward(
+        self,
+        x, h=None
+    ):
+
+        if not self.batch_first:
+            x = ops.transpose(x, axes=(0, 1))
+
+        ### BEGIN YOUR SOLUTION
+        batch_size, seq_len, _ = x.shape
+        
+        positions = np.arange(seq_len).reshape((seq_len, 1))
+        positions_tensor = Tensor(positions, device=x.device)
+        positions_tensor = ops.broadcast_to(positions_tensor, (seq_len, batch_size))
+        
+        pos_emb = self.positional_encoding(positions_tensor)
+        
+        pos_emb = ops.transpose(pos_emb, axes=(0, 1))
+        
+        x = x + pos_emb
+        
+        x = self.layers(x)
+        ### END YOUR SOLUTION
+
+        if not self.batch_first:
+            x = ops.transpose(x, axes=(0, 1))
+
+        return x, init.zeros_like(x)
