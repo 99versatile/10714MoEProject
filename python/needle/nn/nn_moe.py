@@ -9,15 +9,33 @@ from .nn_basic import (
     Parameter, 
     Module, 
     ReLU,
+    SiLU,
     Dropout,
     LayerNorm1d,
     Linear,
-    Sequential
+    Sequential,
+    SoftmaxLoss,
 )
+from .nn_transformer import AttentionLayer
 from needle.backend_selection import array_api
+from typing import Any
 
-class MoERouter(Module):
-    def __init__(self, num_experts, d_model, topk, device=None, dtype="float32"):
+
+class Perplexity(Module):
+    def __init__(self, loss_fn: SoftmaxLoss):
+        super().__init__()
+        self.loss_fn = loss_fn
+
+    def forward(self, logits: Tensor, y: Tensor) -> Tensor:
+        # Cross-entropy (mean over batch)
+        loss = self.loss_fn(logits, y)
+
+        # Perplexity = exp(cross entropy)
+        return ops.exp(loss)
+
+
+class TopKRouter(Module):
+    def __init__(self, num_experts: int, d_model: int, topk: int, device: Any | None = None, dtype: str = "float32"):
         super().__init__()
         self.num_experts = num_experts
         self.d_model = d_model
@@ -66,3 +84,156 @@ class MoERouter(Module):
         router_probs = self.softmax(sparse_logits)
         
         return router_probs, topk_indices, logits
+
+
+class SwiGLU(Module):
+    def __init__(self, in_features: int, hidden_size: int, device: Any | None = None, dtype: str = "float32"):
+        super().__init__()
+        self.in_features = in_features
+        self.hidden_size = hidden_size
+        self.device = device
+        self.dtype = dtype
+        self.linear1 = Linear(in_features, hidden_size, device=device, dtype=dtype)
+        self.silu = SiLU()
+        self.linear2 = Linear(in_features, hidden_size, device=device, dtype=dtype)
+        self.linear3 = Linear(hidden_size, in_features, device=device, dtype=dtype)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.linear3(self.linear1(x) * self.silu(self.linear2(x)))
+
+class TopKMoE(Module):
+    def __init__(self, num_experts: int, d_model: int, topk: int, hidden_size: int, device: Any | None = None, dtype: str = "float32"):
+        super().__init__()
+        self.num_experts = num_experts
+        self.d_model = d_model
+        self.topk = topk
+        self.router = TopKRouter(num_experts, d_model, topk, device=device, dtype=dtype)
+
+        self.experts = [SwiGLU(d_model, hidden_size, device=device, dtype=dtype)
+                        for _ in range(num_experts)]
+
+    def forward(self, x: Tensor) -> Tensor:
+        """
+        Arguments:
+        x: [batch, seq, d_model]
+        Returns:
+        output: [batch, seq, d_model]
+        """
+        # Routing Phase
+        router_probs, topk_indices, logits = self.router(x)
+        # router_probs: [b, s, num_experts]
+        # topk_indices: [b, s, topk]
+
+        b, s, _ = topk_indices.shape
+
+        # Dispatch Phase (token -> expert)
+        # For each expert gather tokens
+        expert_inputs = [[] for _ in range(self.num_experts)]
+        positions = [[] for _ in range(self.num_experts)]  # for scatter restore
+
+        for batch in range(b):
+            for seq in range(s):
+                for k in range(self.topk):
+                    e = topk_indices[batch, seq, k].numpy().item()
+                    expert_inputs[e].append(x[batch, seq])
+                    positions[e].append((batch, seq, k))
+
+        # Convert lists to tensors
+        expert_inputs = [
+            Tensor.stack(tokens) if tokens else None
+            for tokens in expert_inputs
+        ]
+        
+        # Forward Phase (expert -> expert outputs)
+        expert_outputs = []
+        for e in range(self.num_experts):
+            if expert_inputs[e] is None:
+                # Skip non-routed experts
+                expert_outputs.append(None)
+            else:
+                # Forward pass through routed experts
+                expert_outputs.append(self.experts[e](expert_inputs[e]))
+
+        # Combine Phase (expert outputs -> output)
+        output = init.zeros_like(x)
+
+        for e in range(self.num_experts):
+            if expert_outputs[e] is None:
+                continue
+            out_e = expert_outputs[e]
+            pos_e = positions[e]
+            for i, (batch, seq, k) in enumerate(pos_e):
+                prob = router_probs[batch, seq, topk_indices[batch,seq,k]]
+                output[batch, seq] += prob * out_e[i]
+
+        return output
+
+
+class TopKMoETransformerLayer(Module):
+
+    def __init__(
+        self,
+        q_features: int,
+        num_head: int,
+        dim_head: int,
+        hidden_size: int,
+        *,
+        dropout = 0.,
+        causal = True,
+        device = None,
+        dtype = "float32",
+    ):
+
+        super().__init__()
+
+        self.device = device
+        self.dtype = dtype
+
+        ### BEGIN YOUR SOLUTION
+        self.q_features = q_features
+        self.num_head = num_head
+        self.dim_head = dim_head
+        self.hidden_size = hidden_size
+        self.attn = AttentionLayer(q_features, num_head, dim_head, device=device, dtype=dtype, dropout=dropout, causal=causal)
+        self.dropout1 = Dropout(dropout)
+        self.norm = LayerNorm1d(q_features, device=device, dtype=dtype)
+        self.linear1 = Linear(q_features, hidden_size, device=device, dtype=dtype)
+        self.relu = ReLU()
+        self.dropout2 = Dropout(dropout)
+        self.linear2 = Linear(hidden_size, q_features, device=device, dtype=dtype)
+        self.dropout3 = Dropout(dropout)
+        ### END YOUR SOLUTION
+
+    def forward(
+        self,
+        x
+    ):
+        """
+        The forward function of a Transformer Layer.
+        Input: the hidden states from previous layers `x` with shape (batch_size, seq_len, x_dim)
+        Ouput: the hidden states after the Transformer Layer `x` with shape (batch_size, seq_len, x_dim)
+        """
+
+        batch_size, seq_len, x_dim = x.shape
+
+        ### BEGIN YOUR SOLUTION
+        a = self.attn(x)
+        a = self.dropout1(a)
+        x = x + a
+
+        # FFN block with Pre-LN
+        # Reshape for LayerNorm1d: (B, T, D) -> (B*T, D)
+        f = x.reshape((batch_size * seq_len, x_dim))
+        f = self.norm(f)
+        # Keep f in 2D for Linear layers
+        f = self.linear1(f)
+        f = self.relu(f)
+        f = self.dropout2(f)
+        f = self.linear2(f)
+        f = self.dropout3(f)
+        # Reshape back to 3D before residual connection
+        f = f.reshape((batch_size, seq_len, x_dim))
+        y = x + f
+        ### END YOUR SOLUTION
+
+        return y

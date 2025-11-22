@@ -399,6 +399,24 @@ def relu(a):
     return ReLU()(a)
 
 
+class SiLU(TensorOp):
+    def compute(self, a):
+        ### BEGIN YOUR SOLUTION
+        self.sigmoid_a = 1 / (1 + array_api.exp(-a))
+        return a * self.sigmoid_a
+        ### END YOUR SOLUTION
+
+    def gradient(self, out_grad, node):
+        ### BEGIN YOUR SOLUTION
+        lhs, = node.inputs
+        return out_grad * (self.sigmoid_a + lhs * (1 - self.sigmoid_a))
+        ### END YOUR SOLUTION
+
+
+def silu(a):
+    return SiLU()(a)
+
+
 class Tanh(TensorOp):
     def compute(self, a):
         ### BEGIN YOUR SOLUTION
