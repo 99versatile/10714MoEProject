@@ -370,3 +370,134 @@ def loss_err(h, y):
     y_one_hot[np.arange(y.size), y] = 1
     y_ = ndl.Tensor(y_one_hot)
     return softmax_loss(h, y_).numpy(), np.mean(h.numpy().argmax(axis=1) != y)
+
+
+### WIKITEXT-103 training ###
+def epoch_general_wikitext(data, model, seq_len=40, loss_fn=nn.SoftmaxLoss(), opt=None,
+        clip=None, device=None, dtype="float32"):
+    """
+    Iterates over the WikiText-103 data. If optimizer is not None, sets the
+    model to train mode, and for each batch updates the model parameters.
+    If optimizer is None, sets the model to eval mode, and simply computes
+    the loss/accuracy.
+
+    Args:
+        data: data of shape (nbatch, batch_size) given from batchify function
+              (from ndl.data.wikitext_dataset.batchify)
+        model: LanguageModel instance
+        seq_len: i.e. bptt, sequence length
+        loss_fn: nn.Module instance
+        opt: Optimizer instance (optional)
+        clip: max norm of gradients (optional)
+
+    Returns:
+        avg_acc: average accuracy over dataset
+        avg_loss: average loss over dataset
+    """
+    
+    np.random.seed(4)
+    if opt is not None:
+        model.train()
+    else:
+        model.eval()
+
+    correct = 0
+    total_loss = 0.0
+    total_samples = 0
+    h = None
+
+    nbatch = data.shape[0]
+    for i in range(0, nbatch - 1, seq_len):
+        # NOTE: this assumes you implemented
+        # ndl.data.wikitext_dataset.get_batch(data, i, seq_len, device, dtype)
+        X, y = ndl.data.wikitext_dataset.get_batch(data, i, seq_len,
+                                                   device=device, dtype=dtype)
+
+        out, h = model(X, h)
+
+        # Detach hidden state between truncated BPTT segments
+        if isinstance(h, tuple):
+            h = tuple(h_i.detach() for h_i in h)
+        else:
+            h = h.detach() if h is not None else None
+
+        loss = loss_fn(out, y)
+
+        correct += np.sum(np.argmax(out.numpy(), axis=1) == y.numpy())
+        total_loss += loss.numpy().item() * y.shape[0]
+        total_samples += y.shape[0]
+
+        if opt is not None:
+            opt.reset_grad()
+            loss.backward()
+
+            if clip is not None:
+                opt.clip_grad_norm(clip)
+
+            opt.step()
+
+    avg_acc = correct / total_samples
+    avg_loss = total_loss / total_samples
+    return float(avg_acc), float(avg_loss)
+
+
+def train_wikitext(model, data, seq_len=40, n_epochs=1, optimizer=ndl.optim.SGD,
+          lr=4.0, weight_decay=0.0, loss_fn=nn.SoftmaxLoss, clip=None,
+          device=None, dtype="float32"):
+    """
+    Performs {n_epochs} epochs of training on WikiText-103.
+
+    Args:
+        model: LanguageModel instance
+        data: data of shape (nbatch, batch_size) given from batchify function
+              (from ndl.data.wikitext_dataset.batchify)
+        seq_len: i.e. bptt, sequence length
+        n_epochs: number of epochs (int)
+        optimizer: Optimizer class
+        lr: learning rate (float)
+        weight_decay: weight decay (float)
+        loss_fn: nn.Module class
+        clip: max norm of gradients (optional)
+
+    Returns:
+        avg_acc: average accuracy over dataset from last epoch of training
+        avg_loss: average loss over dataset from last epoch of training
+    """
+
+    np.random.seed(4)
+    opt = optimizer(model.parameters(), lr=lr, weight_decay=weight_decay)
+    loss_fn_instance = loss_fn()
+
+    for _ in range(n_epochs):
+        avg_acc, avg_loss = epoch_general_wikitext(
+            data, model, seq_len, loss_fn_instance, opt,
+            clip=clip, device=device, dtype=dtype
+        )
+
+    return avg_acc, avg_loss
+
+
+def evaluate_wikitext(model, data, seq_len=40, loss_fn=nn.SoftmaxLoss,
+        device=None, dtype="float32"):
+    """
+    Computes the test accuracy and loss of the model on WikiText-103.
+
+    Args:
+        model: LanguageModel instance
+        data: data of shape (nbatch, batch_size) given from batchify function
+              (from ndl.data.wikitext_dataset.batchify)
+        seq_len: i.e. bptt, sequence length
+        loss_fn: nn.Module class
+
+    Returns:
+        avg_acc: average accuracy over dataset
+        avg_loss: average loss over dataset
+    """
+
+    np.random.seed(4)
+    loss_fn_instance = loss_fn()
+    avg_acc, avg_loss = epoch_general_wikitext(
+        data, model, seq_len, loss_fn_instance,
+        opt=None, clip=None, device=device, dtype=dtype
+    )
+    return avg_acc, avg_loss
