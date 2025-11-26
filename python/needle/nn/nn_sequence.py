@@ -343,14 +343,16 @@ class LSTM(Module):
         ### END YOUR SOLUTION
 
 class Embedding(Module):
-    def __init__(self, num_embeddings, embedding_dim, device=None, dtype="float32"):
+    def __init__(self, num_embeddings, embedding_dim, padding_idx=None, device=None, dtype="float32"):
         super().__init__()
         """
         Maps one-hot word vectors from a dictionary of fixed size to embeddings.
+        If padding_idx is not None, pad the embedding with zeros at the padding_idx index.
 
         Parameters:
         num_embeddings (int) - Size of the dictionary
         embedding_dim (int) - The size of each embedding vector
+        padding_idx (int) - If given, pad the embedding with zeros at the padding_idx index.
 
         Variables:
         weight - The learnable weights of shape (num_embeddings, embedding_dim)
@@ -359,9 +361,15 @@ class Embedding(Module):
         ### BEGIN YOUR SOLUTION
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
+        self.padding_idx = padding_idx
         self.device = device
         self.dtype = dtype
         self.weight = Parameter(init.randn(num_embeddings, embedding_dim, device=device, dtype=dtype, mean=0, std=1))
+
+        # Set padding_idx row to zeros
+        if padding_idx is not None:
+            weight_data = self.weight.data
+            weight_data[padding_idx, :] = 0
         ### END YOUR SOLUTION
 
     def forward(self, x: Tensor) -> Tensor:
@@ -379,5 +387,11 @@ class Embedding(Module):
         one_hot = init.one_hot(self.num_embeddings, x, device=x.device, dtype=x.dtype)
         one_hot_2d = one_hot.reshape((seq_len * bs, self.num_embeddings))
         result = ops.matmul(one_hot_2d, self.weight)  # (seq_len*bs, embedding_dim)
-        return result.reshape((seq_len, bs, self.embedding_dim))
+        result = result.reshape((seq_len, bs, self.embedding_dim))
+        
+        if self.padding_idx is not None:
+            mask = (x == self.padding_idx).reshape((seq_len, bs, 1))
+            result = result * (1 - mask)
+        
+        return result
         ### END YOUR SOLUTION
