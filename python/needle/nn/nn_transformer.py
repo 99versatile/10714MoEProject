@@ -350,7 +350,6 @@ class Transformer(Module):
         self.batch_first = batch_first
 
         ### BEGIN YOUR SOLUTION
-        self.positional_encoding = Embedding(sequence_len, embedding_size, device=device, dtype=dtype)
         self.layers = Sequential(*[TransformerLayer(embedding_size, num_head, dim_head, hidden_size, dropout=dropout, causal=causal, device=device, dtype=dtype) for _ in range(num_layers)])
         ### END YOUR SOLUTION
 
@@ -364,16 +363,6 @@ class Transformer(Module):
 
         ### BEGIN YOUR SOLUTION
         batch_size, seq_len, _ = x.shape
-        
-        positions = np.arange(seq_len).reshape((seq_len, 1))
-        positions_tensor = Tensor(positions, device=x.device)
-        positions_tensor = ops.broadcast_to(positions_tensor, (seq_len, batch_size))
-        
-        pos_emb = self.positional_encoding(positions_tensor)
-        
-        pos_emb = ops.transpose(pos_emb, axes=(0, 1))
-        
-        x = x + pos_emb
         
         x = self.layers(x)
         ### END YOUR SOLUTION
