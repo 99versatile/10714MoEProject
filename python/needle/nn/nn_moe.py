@@ -21,19 +21,6 @@ from needle.backend_selection import array_api
 from typing import Any
 
 
-class Perplexity(Module):
-    def __init__(self, loss_fn: SoftmaxLoss):
-        super().__init__()
-        self.loss_fn = loss_fn
-
-    def forward(self, logits: Tensor, y: Tensor) -> Tensor:
-        # Cross-entropy (mean over batch)
-        loss = self.loss_fn(logits, y)
-
-        # Perplexity = exp(cross entropy)
-        return ops.exp(loss)
-
-
 class TopKRouter(Module):
     def __init__(self, num_experts: int, d_model: int, topk: int, device: Any | None = None, dtype: str = "float32"):
         super().__init__()
@@ -244,6 +231,9 @@ class TopKMoETransformer(Module):
         num_layers: int, 
         num_experts: int,
         topk: int,
+        vocab_size: int, 
+        max_position_embeddings: int, 
+        learnable_word_embeddings: bool,
         *,
         num_head: int = 8,
         dim_head: int = 32,
@@ -262,7 +252,6 @@ class TopKMoETransformer(Module):
         self.batch_first = batch_first
 
         ### BEGIN YOUR SOLUTION
-        self.positional_encoding = Embedding(sequence_len, embedding_size, device=device, dtype=dtype)
         self.layers = Sequential(*[TopKMoETransformerLayer(embedding_size, num_head, dim_head, hidden_size, num_experts, topk, dropout=dropout, causal=causal, device=device, dtype=dtype) for _ in range(num_layers)])
         ### END YOUR SOLUTION
 
@@ -276,16 +265,6 @@ class TopKMoETransformer(Module):
 
         ### BEGIN YOUR SOLUTION
         batch_size, seq_len, _ = x.shape
-        
-        positions = np.arange(seq_len).reshape((seq_len, 1))
-        positions_tensor = Tensor(positions, device=x.device)
-        positions_tensor = ops.broadcast_to(positions_tensor, (seq_len, batch_size))
-        
-        pos_emb = self.positional_encoding(positions_tensor)
-        
-        pos_emb = ops.transpose(pos_emb, axes=(0, 1))
-        
-        x = x + pos_emb
         
         x = self.layers(x)
         ### END YOUR SOLUTION
