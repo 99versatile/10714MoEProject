@@ -16,11 +16,11 @@ from .nn_basic import (
     Sequential,
     SoftmaxLoss,
 )
-from .nn_transformer import AttentionLayer
 from needle.backend_selection import array_api
 from typing import Any, Optional
 from .nn_transformer import Transformer
 from .nn_moe import TopKMoETransformer
+from .nn_basic import Residual
 
 
 class Perplexity(Module):
@@ -200,13 +200,19 @@ class LMBackbone(Module):
         # self.apply(partial(_init_weights, n_layers=config.n_layers, block_type=config.block_type))
 
     def forward(self, input_ids, position_ids=None):
+        batch_size_input, seq_len_input = input_ids.shape
         hidden_states = self.embeddings(
             input_ids,
             position_ids=position_ids,
         )
+        batch_size_hidden, seq_len_hidden, embedding_size_hidden = hidden_states.shape
+        
+        assert batch_size_hidden == batch_size_input and seq_len_hidden == seq_len_input, "Batch size and sequence length must match between input and hidden states"
+        
         for layer in self.layers:
             # Transformer and TopKMoETransformer return (x, h) tuple
             hidden_states, _ = layer(hidden_states)
+            assert hidden_states.shape == (batch_size_hidden, seq_len_hidden, embedding_size_hidden), "Hidden states shape must match between layers"
         # Final LayerNorm computed in float32 for stability, cast back to original dtype
         hidden_states = self.ln_f(self.drop_f(hidden_states).to("float32")).to(hidden_states.dtype)
         return hidden_states
@@ -243,6 +249,9 @@ class LanguageModel(Module):
     ):
         
         super().__init__()
+
+        self.embedding_size = embedding_size
+        self.vocab_size = vocab_size
         
         # Ensure vocab size is properly padded
         if vocab_size % pad_vocab_size_multiple != 0:
@@ -284,7 +293,7 @@ class LanguageModel(Module):
             input_ids, 
             labels=None, 
             position_ids=None, 
-            return_logits: bool = False,
+            return_logits: bool = True,
             return_hidden_states: bool = False,
         ):
         """
@@ -298,8 +307,16 @@ class LanguageModel(Module):
         Returns:
             dict containing logits and optionally loss
         """
+        
+        batch_size, seq_len = input_ids.shape
+
         hidden_states = self.backbone(input_ids, position_ids=position_ids)
+
+        assert hidden_states.shape == (batch_size, seq_len, self.embedding_size), "Hidden states shape must match (batch_size, seq_len, embedding_size)"
+
         logits = self.lm_head(hidden_states)
+
+        assert logits.shape == (batch_size, seq_len, self.vocab_size), "Logits shape must match (batch_size, seq_len, vocab_size)"
         
         loss = None
         if labels is not None:
