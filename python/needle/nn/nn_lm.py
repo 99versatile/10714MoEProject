@@ -110,7 +110,7 @@ class TokenEmbeddings(Module):
             embeddings = embeddings + position_embeddings
         
         # Transpose back to (batch_size, seqlen, embed_dim) 
-        embeddings = ops.transpose(embeddings, axes=(1, 0, 2))
+        embeddings = ops.transpose(embeddings, axes=(0, 1))
         return embeddings
 
 
@@ -206,10 +206,9 @@ class LMBackbone(Module):
         
         assert batch_size_hidden == batch_size_input and seq_len_hidden == seq_len_input, "Batch size and sequence length must match between input and hidden states"
         
-        for layer in self.layers:
-            # Transformer and TopKMoETransformer return (x, h) tuple
-            hidden_states, _ = layer(hidden_states)
-            assert hidden_states.shape == (batch_size_hidden, seq_len_hidden, embedding_size_hidden), "Hidden states shape must match between layers"
+        # Transformer and TopKMoETransformer return (x, h) tuple
+        hidden_states, _ = self.layers(hidden_states)
+        assert hidden_states.shape == (batch_size_hidden, seq_len_hidden, embedding_size_hidden), "Hidden states shape must match between layers"
         # Final LayerNorm computed in float32 for stability, cast back to original dtype
         hidden_states = self.ln_f(self.drop_f(hidden_states).to("float32")).to(hidden_states.dtype)
         return hidden_states
