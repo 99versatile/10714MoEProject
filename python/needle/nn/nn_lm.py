@@ -209,8 +209,19 @@ class LMBackbone(Module):
         # Transformer and TopKMoETransformer return (x, h) tuple
         hidden_states, _ = self.layers(hidden_states)
         assert hidden_states.shape == (batch_size_hidden, seq_len_hidden, embedding_size_hidden), "Hidden states shape must match between layers"
+        
         # Final LayerNorm computed in float32 for stability, cast back to original dtype
-        hidden_states = self.ln_f(self.drop_f(hidden_states).to("float32")).to(hidden_states.dtype)
+        # hidden_states = self.ln_f(self.drop_f(hidden_states).to("float32")).to(hidden_states.dtype)
+        original_dtype = hidden_states.dtype
+        batch_size, seq_len, embedding_size = hidden_states.shape
+
+        hidden_states_2d = hidden_states.reshape((batch_size * seq_len, embedding_size))
+        hidden_states_2d_float32 = Tensor(self.drop_f(hidden_states_2d), dtype="float32")
+        hidden_states_2d_normalized = self.ln_f(hidden_states_2d_float32)
+
+        hidden_states = Tensor(hidden_states_2d_normalized, dtype=original_dtype)
+        hidden_states = hidden_states.reshape((batch_size, seq_len, embedding_size))
+        
         return hidden_states
 
 
@@ -247,18 +258,22 @@ class LanguageModel(Module):
         super().__init__()
 
         self.embedding_size = embedding_size
-        self.vocab_size = vocab_size
+        self.original_vocab_size = vocab_size
         
         # Ensure vocab size is properly padded
-        if vocab_size % pad_vocab_size_multiple != 0:
-            vocab_size += pad_vocab_size_multiple - (
-                vocab_size % pad_vocab_size_multiple
+        padded_vocab_size = vocab_size
+        if padded_vocab_size % pad_vocab_size_multiple != 0:
+            padded_vocab_size += pad_vocab_size_multiple - (
+                padded_vocab_size % pad_vocab_size_multiple
             )
+
+        # Store padded vocab_size as self.vocab_size (used for model dimensions)
+        self.vocab_size = padded_vocab_size
 
         # Create backbone and language modeling head
         self.backbone = LMBackbone(
             embedding_size=embedding_size, 
-            vocab_size=vocab_size, 
+            vocab_size=self.vocab_size, 
             max_position_embeddings=max_position_embeddings, 
             learnable_word_embeddings=learnable_word_embeddings, 
             n_layers=n_layers, block_type=block_type, 
@@ -277,12 +292,17 @@ class LanguageModel(Module):
             dtype=dtype,
         )
         self.label_smoothing = label_smoothing
-        self.lm_head = Linear(embedding_size, vocab_size, bias=False, device=device, dtype=dtype)
+        # self.lm_head = Linear(embedding_size, vocab_size, bias=False, device=device, dtype=dtype)
+        self.lm_head = Linear(embedding_size, self.vocab_size, bias=False, device=device, dtype=dtype)
 
         # Optionally tie weights between input embeddings and output head BEFORE initialization
         # This ensures the tied weights get properly initialized together
         if tie_word_embeddings:
-            self.lm_head.weight = self.backbone.embeddings.word_embeddings.weight
+            # self.lm_head.weight = self.backbone.embeddings.word_embeddings.weight
+            # Embedding.weight shape: (vocab_size, embedding_size)
+            # Linear.weight needs shape: (embedding_size, vocab_size)
+            embedding_weight = self.backbone.embeddings.word_embeddings.weight
+            self.lm_head.weight = ops.transpose(embedding_weight, axes=(1, 0))
 
     def forward(
             self, 
@@ -291,6 +311,7 @@ class LanguageModel(Module):
             position_ids=None, 
             return_logits: bool = True,
             return_hidden_states: bool = False,
+            h=None,
         ):
         """
         Forward pass with optional loss computation
@@ -310,36 +331,12 @@ class LanguageModel(Module):
 
         assert hidden_states.shape == (batch_size, seq_len, self.embedding_size), "Hidden states shape must match (batch_size, seq_len, embedding_size)"
 
-        logits = self.lm_head(hidden_states)
+        hidden_states_2d = hidden_states.reshape((batch_size * seq_len, self.embedding_size))
+        logits_2d = self.lm_head(hidden_states_2d)
+        logits_3d = logits_2d.reshape((batch_size, seq_len, self.vocab_size))
 
-        assert logits.shape == (batch_size, seq_len, self.vocab_size), "Logits shape must match (batch_size, seq_len, vocab_size)"
-        
-        loss = None
-        if labels is not None:
-            # Shift so that tokens < n predict n
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            # Flatten the tokens
-            smoothing = self.label_smoothing
-            loss_fct = SoftmaxLoss(label_smoothing=smoothing)
-            shift_logits = shift_logits.view(-1, shift_logits.size(-1))
-            shift_labels = shift_labels.view(-1)
-            # Compute CE loss in float32 for numerical stability under mixed precision
-            loss = loss_fct(shift_logits.float(), shift_labels)
-            # Save memory by not returning logits unless explicitly requested
-            if not return_logits:
-                logits = None
-        else:
-            # If no labels and logits are not requested, free logits to save memory
-            if not return_logits:
-                logits = None
-        
-        result = {
-            'loss': loss
-        }
-        if return_logits:
-            result['logits'] = logits
-        if return_hidden_states:
-            result['hidden_states'] = hidden_states
-        return result
-    
+        assert logits_3d.shape == (batch_size, seq_len, self.vocab_size), "Logits shape must match (batch_size, seq_len, vocab_size)"
+
+        logits = logits_2d 
+
+        return logits, None

@@ -130,9 +130,17 @@ class Sequential(Module):
     def forward(self, x: Tensor) -> Tensor:
         ### BEGIN YOUR SOLUTION
         for module in self.modules:
-            x = module(x)
+            result = module(x)
+
+            if isinstance(result, tuple):
+                x = result[0]
+            else:
+                x = result
         
-        return x
+        if isinstance(result, tuple):
+            return result
+        else:
+            return x
         ### END YOUR SOLUTION
 
 
@@ -214,8 +222,10 @@ class LayerNorm1d(Module):
         self.dim = dim
         self.eps = eps
         ### BEGIN YOUR SOLUTION
-        self.weight = Parameter(np.ones((self.dim,)))
-        self.bias = Parameter(np.zeros((self.dim,)))
+        from needle.backend_ndarray import default_device
+        device = device if device is not None else default_device()
+        self.weight = Parameter(init.ones(self.dim, device=device, dtype=dtype))
+        self.bias = Parameter(init.zeros(self.dim, device=device, dtype=dtype))
         ### END YOUR SOLUTION
 
     def forward(self, x: Tensor) -> Tensor:
@@ -237,8 +247,11 @@ class LayerNorm1d(Module):
         
         # apply: (x - mean) / sqrt(variance + eps)
         normalized = ops.divide(x_centered, std)
+
+        weight_reshaped = ops.reshape(self.weight, (1, self.dim))
+        bias_reshaped = ops.reshape(self.bias, (1, self.dim))
         
-        y = ops.add(ops.multiply(ops.broadcast_to(self.weight, x.shape), normalized), ops.broadcast_to(self.bias, x.shape))
+        y = ops.add(ops.multiply(ops.broadcast_to(weight_reshaped, x.shape), normalized), ops.broadcast_to(bias_reshaped, x.shape))
         
         return y
         ### END YOUR SOLUTION
@@ -252,7 +265,7 @@ class Dropout(Module):
     def forward(self, x: Tensor) -> Tensor:
         ### BEGIN YOUR SOLUTION
         if self.training:
-            keep_mask = init.randb(*x.shape, p=(1-self.p))
+            keep_mask = init.randb(*x.shape, p=(1-self.p), device=x.device, dtype=x.dtype)
             scale_factor = 1.0 / (1 - self.p)
             return ops.mul_scalar(ops.multiply(keep_mask, x), scale_factor)
         else:
