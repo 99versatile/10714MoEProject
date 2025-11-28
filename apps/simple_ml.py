@@ -12,6 +12,7 @@ import needle as ndl
 import needle.nn as nn
 from apps.models import *
 import time
+from tqdm import tqdm
 device = ndl.cpu()
 
 def parse_mnist(image_filename, label_filename):
@@ -468,7 +469,7 @@ def train_wikitext(model, data, seq_len=40, n_epochs=1, optimizer=ndl.optim.SGD,
     opt = optimizer(model.parameters(), lr=lr, weight_decay=weight_decay)
     loss_fn_instance = loss_fn()
 
-    for _ in range(n_epochs):
+    for _ in tqdm(range(n_epochs), desc="Training WikiText-103"):
         avg_acc, avg_loss = epoch_general_wikitext(
             data, model, seq_len, loss_fn_instance, opt,
             clip=clip, device=device, dtype=dtype
