@@ -44,7 +44,7 @@ class TokenEmbeddings(Module):
         max_position_embeddings: int,
         padding_idx: int | None = None,
         word_embed_proj_dim: int | None = None,
-        learnable: bool = True,
+        learnable_word_embeddings: bool = True,
         device: Any | None = None,
         dtype: str = "float32",
     ):
@@ -72,7 +72,7 @@ class TokenEmbeddings(Module):
             self.project_in = Linear(
                 word_embed_proj_dim, embed_dim, bias=False, device=device, dtype=dtype
             )
-        if not learnable:
+        if not learnable_word_embeddings:
             self.word_embeddings.weight.requires_grad = False
 
         self.max_position_embeddings = max_position_embeddings
@@ -174,9 +174,6 @@ class LMBackbone(Module):
                     num_layers=n_layers,
                     num_experts=num_experts, 
                     topk=topk,
-                    vocab_size=vocab_size, 
-                    max_position_embeddings=max_position_embeddings, 
-                    learnable_word_embeddings=learnable_word_embeddings,
                     num_head=num_head,
                     dim_head=dim_head,
                     dropout=dropout,
