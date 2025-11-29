@@ -221,40 +221,40 @@ class LayerNorm1d(Module):
         super().__init__()
         self.dim = dim
         self.eps = eps
-        ### BEGIN YOUR SOLUTION
-        from needle.backend_ndarray import default_device
-        device = device if device is not None else default_device()
         self.weight = Parameter(init.ones(self.dim, device=device, dtype=dtype))
         self.bias = Parameter(init.zeros(self.dim, device=device, dtype=dtype))
-        ### END YOUR SOLUTION
 
     def forward(self, x: Tensor) -> Tensor:
         ### BEGIN YOUR SOLUTION
-        mean = ops.summation(x, axes=(1,)) / x.shape[1]
-        mean_broadcast = ops.reshape(mean, (x.shape[0], 1))
-        mean_broadcast = ops.broadcast_to(mean_broadcast, x.shape)
-        
-        # calculate var
-        x_centered = ops.add(x, ops.negate(mean_broadcast))  
-        x_squared = ops.power_scalar(x_centered, 2)  
-        var = ops.summation(x_squared, axes=(1,)) / x.shape[1]
-        var_broadcast = ops.reshape(var, (x.shape[0], 1))
-        var_broadcast = ops.broadcast_to(var_broadcast, x.shape)
-        
-        # Add eps and take sqrt
-        var_eps = ops.add_scalar(var_broadcast, self.eps)
+        # Works for (B, D), (B, T, D), etc. Normalize over last dim.
+        dim = self.dim
+        assert x.shape[-1] == dim, "LayerNorm1d: last dim must equal self.dim"
+
+        # mean over last dimension
+        mean = ops.summation(x, axes=(-1,)) / dim          # shape: x.shape[:-1]
+        mean = ops.reshape(mean, x.shape[:-1] + (1,))      # (..., 1)
+        mean = ops.broadcast_to(mean, x.shape)             # (..., D)
+
+        # variance over last dimension
+        x_centered = ops.add(x, ops.negate(mean))
+        x_squared = ops.power_scalar(x_centered, 2)
+        var = ops.summation(x_squared, axes=(-1,)) / dim   # shape: x.shape[:-1]
+        var = ops.reshape(var, x.shape[:-1] + (1,))
+        var = ops.broadcast_to(var, x.shape)
+
+        var_eps = ops.add_scalar(var, self.eps)
         std = ops.power_scalar(var_eps, 0.5)
-        
-        # apply: (x - mean) / sqrt(variance + eps)
         normalized = ops.divide(x_centered, std)
 
-        weight_reshaped = ops.reshape(self.weight, (1, self.dim))
-        bias_reshaped = ops.reshape(self.bias, (1, self.dim))
-        
-        y = ops.add(ops.multiply(ops.broadcast_to(weight_reshaped, x.shape), normalized), ops.broadcast_to(bias_reshaped, x.shape))
-        
+        # scale + shift: reshape params to (1,...,1, dim)
+        param_shape = (1,) * (len(x.shape) - 1) + (dim,)
+        weight = ops.reshape(self.weight, param_shape)
+        bias = ops.reshape(self.bias, param_shape)
+
+        y = ops.add(ops.multiply(weight, normalized), bias)
         return y
         ### END YOUR SOLUTION
+
 
 
 class Dropout(Module):
