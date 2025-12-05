@@ -37,19 +37,19 @@ class TopKRouter(Module):
         Subtract the max value from the logit to avoid overflow.
         """
         max_val = Tensor(
-            logit.realize_cached_data().max(axis=3),
+            logit.realize_cached_data().max(axis=-1, keepdims=True),
             device=logit.device,
             dtype=logit.dtype,
             requires_grad=False
         )
 
-        max_val = max_val.reshape((*logit.shape[:-1], 1))
+        # max_val = max_val.reshape((*logit.shape[:-1], 1))
         max_val = max_val.broadcast_to(logit.shape)
 
         probs = ops.exp(logit - max_val)
 
-        denom = probs.sum(axes=3)
-        denom = denom.reshape((*logit.shape[:-1], 1))
+        denom = probs.sum(axes=-1, keepdims=True)
+        # denom = denom.reshape((*logit.shape[:-1], 1))
         denom = denom.broadcast_to(logit.shape)
 
         return probs / denom    
@@ -66,8 +66,19 @@ class TopKRouter(Module):
         topk_logits, topk_indices = ops.topk(logits, self.topk)
 
         # Compute sparse softmax
-        zeros = Tensor(array_api.full_like(logits, float('-inf')))
-        sparse_logits = zeros.scatter(-1, topk_indices, topk_logits)
+        zeros = init.constant(*logits.shape, c=float('-inf'), device=logits.device, dtype=logits.dtype)
+        
+        # Extract underlying NDArray data from tensors
+        zeros_data = zeros.realize_cached_data()
+        indices_data = topk_indices.realize_cached_data()
+        values_data = topk_logits.realize_cached_data()
+        
+        # Perform scatter operation
+        sparse_logits = array_api.scatter_along_axis(zeros_data, indices_data, values_data, axis=-1)
+        
+        # Convert back to Tensor on the same device
+        sparse_logits = Tensor(sparse_logits, device=logits.device, dtype=logits.dtype)
+
         router_probs = self.softmax(sparse_logits)
         
         return router_probs, topk_indices, logits
